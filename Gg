@@ -1,0 +1,89 @@
+import Foundation
+import Combine
+import FirebaseAuth
+import FirebaseFirestore
+
+class InboxController: ObservableObject {
+    
+    @Published var messages: [Message] = []
+    
+    private let db = Firestore.firestore()
+    private var messagesListener: ListenerRegistration?
+    private var authHandle: AuthStateDidChangeListenerHandle?
+    
+    init() {
+        // when somebody logs in or out, reload that user's messages
+        authHandle = Auth.auth().addStateDidChangeListener { [weak self] _, user in
+            self?.startListening(uid: user?.uid)
+        }
+    }
+    
+    deinit {
+        messagesListener?.remove()
+        if let handle = authHandle {
+            Auth.auth().removeStateDidChangeListener(handle)
+        }
+    }
+    
+    // users/{uid}/messages
+    private func startListening(uid: String?) {
+        messagesListener?.remove()
+        messagesListener = nil
+        messages = []
+        
+        guard let uid = uid else { return }
+        
+        messagesListener = db.collection("users").document(uid).collection("messages")
+            .order(by: "createdAt", descending: true)
+            .addSnapshotListener { [weak self] snapshot, error in
+                if let error = error {
+                    print("MESSAGES LISTENER ERROR:", error)
+                    return
+                }
+                let result: [Message] = (snapshot?.documents ?? []).compactMap { doc in
+                    try? doc.data(as: Message.self)
+                }
+                DispatchQueue.main.async { self?.messages = result }
+            }
+    }
+    
+    func sendNotification(to name: String, content: String) {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMMM dd yyyy"
+        
+        let newMessage = Message(
+            recipientName: name,
+            dateSent: formatter.string(from: Date()),
+            content: content,
+            createdAt: Date()
+        )
+        
+        do {
+            try db.collection("users").document(uid).collection("messages")
+                .addDocument(from: newMessage) { error in
+                    if let error = error {
+                        print("SEND MESSAGE ERROR:", error)
+                    }
+                }
+        } catch {
+            print("SEND MESSAGE ENCODE ERROR:", error)
+        }
+    }
+}
+
+
+-----
+
+
+import Foundation
+import FirebaseFirestore
+
+struct Message: Identifiable, Codable {
+    @DocumentID var id: String?
+    var recipientName: String
+    var dateSent: String
+    var content: String
+    var createdAt: Date
+}
